@@ -1,374 +1,300 @@
-# GreenLight Credit
 
-A small, working credit journey that runs entirely from a chat widget.
+# GreenLight Credit - Sanction Widget
 
-The user types into a web widget, and under the hood the system runs a short pipeline:
+This repository contains a working prototype of **GreenLight Credit**, a small credit sanction widget plus a backend orchestrator, built for the EY Techathon 6.0 theme on Agentic AI.
 
-1. Capture consent and minimal KYC fields  
-2. Run basic verification checks  
-3. Run a simple underwriting rule engine  
-4. If approved, generate a Sanction Letter plus Key Fact Statement (KFS) as a clean PDF  
-5. Return both PDF and KFS back to the widget
-
-The goal is to show how agent style AI can sit around real workflows, not just a toy chatbot.
+The system lets a user enter basic details in a single widget, runs verification and underwriting rules in the backend, and returns a **sanction letter PDF** and a **Key Fact Statement (KFS)** that the widget renders as a clean summary.
 
 ---
 
-## 1. Problem statement
+## 1. Problem
 
-Traditional small-ticket credit journeys (personal loans, cards, instant EMI) often suffer from:
+Small ticket credit journeys often suffer from:
 
-- Long forms and drop offs  
-- Manual checks carried out in separate systems  
-- Sanction letters and KFS generated as plain templates with little structure  
+- Scattered forms and handoffs
+- Manual checks and error prone decision making
+- Poor documentation for the customer (no clear KFS or sanction letter)
 
-For a simple use case like a pre approved personal loan, the journey can be made much lighter:
-
-- Ask only what is needed  
-- Run checks automatically in the background  
-- Produce clear, audit friendly output (KFS plus sanction PDF)  
-- Hand off to a human only when needed
-
-GreenLight Credit is a small simulation of such a journey.
+EY Techathon asks for practical agent style systems. Here, the "agent" is a backend orchestrator that owns the full mini journey: collect inputs, verify, underwrite, and issue documents, all behind a simple front end.
 
 ---
 
-## 2. What this prototype does
+## 2. Solution overview
 
-From the user point of view:
+**GreenLight Credit** is a two part system:
 
-- A chat widget sits on a page  
-- The user starts the conversation and gives consent  
-- The assistant asks for name, mobile, and last 4 digits of PAN  
-- The user shares desired amount and tenure  
-- In seconds, the user receives:
-  - A KFS grid in the UI  
-  - A downloadable PDF sanction letter  
+1. **Web widget (Next.js)**  
+   - A drop in widget that can sit inside any web page.  
+   - Collects name, mobile, PAN last 4 digits, desired amount, and tenure.  
+   - Talks to the backend with a `session_id` and renders replies, KFS cards, and a link to the sanction PDF.
 
-From the system point of view, each message is handled by a simple agent pipeline:
+2. **Orchestrator (FastAPI)**  
+   - Owns the full state machine for a credit request.  
+   - Stages: `start → precheck → verify → underwrite → sanction → done` (or `manual_review` / `declined`).  
+   - Generates a **Sanction Letter PDF** and a **KFS JSON** in `/files`, which the widget consumes.
 
-1. Start and consent  
-2. Precheck  
-3. Verification agent  
-4. Underwriting agent  
-5. Sanction agent that generates KFS plus PDF
+At the end of a successful flow the user sees:
 
-Each stage writes to a small event log for traceability.
+- A friendly confirmation message.  
+- A Key Fact Statement rendered as a grid (amount, tenure, EMI, APR, mandate).  
+- A downloadable sanction letter PDF.
 
 ---
 
 ## 3. Architecture
 
-### High level
+High level view:
 
-- **Orchestrator (backend)**  
-  - FastAPI application  
-  - Routes under `/api`  
-  - Session store in a lightweight JSON file  
-  - Agents for `verification`, `underwriting`, and `sanction`  
-  - Sanction PDF and KFS JSON written under `/app/data` and served from `/files/...`
+```text
+[ Web Widget (Next.js) ]
+          |
+          v
+[ Orchestrator API (FastAPI) ]
+          |
+  +------------------------+
+  |  Agents & Services     |
+  |                        |
+  |  - verification        |
+  |  - underwriting        |
+  |  - sanction            |
+  |  - mandate, crm, audit |
+  +------------------------+
+          |
+          v
+   /app/data  →  /files (PDF + JSON)
+```
 
-- **Web widget (frontend)**  
-  - Next.js 14 app (React)  
-  - Chat style widget with:
-    - Message history  
-    - Loading states  
-    - KFS card when available  
-    - Links to generated PDF  
+### Components
 
-- **Docker setup**  
-  - `orchestrator` container on port `8000`  
-  - `widget` container on port `3000`  
-  - Shared `data` volume for generated files  
+- **web-widget/**  
+  Next.js 14 app that renders the credit widget, calls the API, and shows the returned KFS and PDF link.
 
-### Tech stack
+- **orchestrator/**  
+  FastAPI app that exposes:
+  - `GET /api/health` - simple health check  
+  - `POST /api/chat` - main endpoint for the widget
 
-- Backend: FastAPI, Uvicorn, Pydantic, ReportLab  
-- Frontend: Next.js 14, React, TypeScript, Tailwind CSS  
-- Containerisation: Docker, docker compose
+- **Agents** (`app/agents/`)  
+  - `verification.py` - simple checks on name, mobile, and PAN last 4.  
+  - `underwriting.py` - rule based decision for approve or decline, score and reason.  
+  - `sanction.py` - creates the KFS data, generates the PDF, and stores everything under `/app/data`.
 
----
-
-## 4. How the credit flow works
-
-The core logic lives in `app/agents/master.py` and the agent modules under `app/agents/`.
-
-### Stages
-
-1. **start**  
-   - Default stage for a new session  
-   - On first user message, moves to `precheck` and asks for:
-     - Name  
-     - Mobile  
-     - PAN last 4 digits  
-
-2. **precheck**  
-   - Stores the form data in the session  
-   - Logs an event  
-   - Moves to `verify`
-
-3. **verify** (`app/agents/verification.py`)  
-   - Reads `name`, `mobile`, `pan_last4`  
-   - Performs simple checks (length, basic format, etc.)  
-   - Returns `{"ok": true or false, "reasons": [...]}`  
-   - If `ok` is false, the flow moves to `manual_review` and returns `handoff: true`
-
-4. **underwrite** (`app/agents/underwriting.py`)  
-   - Evaluates requested `desired_amount` and `tenure` against simple rules  
-   - Produces:
-     - `amount` (sanctioned amount)  
-     - `tenure`  
-     - `emi`  
-     - `apr`  
-     - `score`  
-     - `approve` (boolean)  
-   - If `approve` is false, returns a clear decline reason
-
-5. **sanction** (`app/agents/sanction.py`)  
-   - Creates a mock e mandate object  
-   - Builds a KFS dictionary with key fields:
-     - Name  
-     - Amount  
-     - Tenure  
-     - EMI  
-     - APR  
-     - Mandate ID  
-     - PAN last 4  
-   - Writes:
-     - `sanction_<session>.pdf`  
-     - `kfs_<session>.json`  
-   - Updates a mock CRM store  
-   - Returns browser safe data:
-     ```json
-     {
-       "ok": true,
-       "pdf": "/files/sanction_<session>.pdf",
-       "kfs": {
-         "Name": "...",
-         "Amount": 150000,
-         "Tenure": 24,
-         "EMI": 7200,
-         "APR": "16%",
-         "MandateID": "MDT12345",
-         "PAN Last 4": "1234"
-       }
-     }
-     ```
-
-6. **done**  
-   - The journey is marked complete  
-   - Further messages get a simple "session complete" reply
+- **PDF and KFS**  
+  - `app/pdf/sanction_letter.py` - builds a professional sanction letter using ReportLab.  
+  - KFS is stored as JSON and also returned inline to the widget.
 
 ---
 
-## 5. Sanction letter and KFS PDF
+## 4. User journey
 
-Sanction PDFs are built in `app/pdf/sanction_letter.py` using ReportLab layout primitives.
-
-The PDF includes:
-
-- Bank and product header  
-- Customer details (name, masked PAN, mobile)  
-- Loan summary table:
-  - Sanctioned amount with ₹ symbol  
-  - Tenure (months)  
-  - EMI  
-  - APR  
-- A Key Fact Statement table  
-- Mandate details section  
-- Standard terms section  
-- Signature placeholders for:
-  - Bank representative  
-  - Customer  
-
-The layout is designed for:
-
-- A4 page  
-- Clear section headings  
-- Proper alignment and spacing  
-- Simple fonts that render well in common PDF viewers  
+1. The widget opens and starts a session.
+2. The user accepts consent and enters:
+   - Name  
+   - Mobile number  
+   - PAN last 4 digits  
+   - Desired amount  
+   - Tenure (months)
+3. The widget sends a `POST /api/chat` with:
+   - `session_id`  
+   - `message` (free text from user)  
+   - `name`, `mobile`, `pan_tail`, `desired_amount`, `tenure`
+4. The orchestrator:
+   - Moves stage from `start` to `precheck`, logs events.
+   - Runs `verification.run(state)` for basic checks.
+   - Runs `underwriting.run(...)` for score, approve/decline, and reason.
+   - If approved, calls `sanction.run(session_id, decision, state)` to:
+     - Create a mandate object.
+     - Build a KFS dict.
+     - Generate a high quality sanction PDF.
+     - Store both in `/app/data` and expose them under `/files`.
+5. The widget receives a JSON response and:
+   - Shows the reply message.
+   - Shows a Key Fact Statement grid from `kfs`.
+   - Shows a link to the PDF (served by the backend).
 
 ---
 
-## 6. Running locally
+## 5. Tech stack
 
-### 6.1 Prerequisites
+- **Backend**  
+  - Python 3.11  
+  - FastAPI + Uvicorn  
+  - Pydantic models  
+  - ReportLab for PDF generation  
+  - Simple in memory session store and events
 
-- Docker and docker compose installed  
-- Git installed
+- **Frontend**  
+  - Next.js 14  
+  - React  
+  - A single widget page that can be embedded
 
-### 6.2 Clone the repository
+- **Runtime**  
+  - Docker and Docker Compose for local run  
+  - Two containers: `orchestrator` and `widget`
+
+---
+
+## 6. Running the project locally
+
+### Prerequisites
+
+- Docker installed (with the compose plugin)
+
+### Steps
 
 ```bash
+# 1. Clone the repository
 git clone https://github.com/<your-username>/greenlight-credit.git
 cd greenlight-credit
-```
 
-### 6.3 Environment file
+# 2. Set environment variables (if needed)
+# cp .env.example .env   # if an example file is present
 
-If an `.env` file is used, copy it from the example:
-
-```bash
-cp orchestrator/.env.example orchestrator/.env
-```
-
-Fill in any keys if present in the codebase. For this prototype, default values are enough.
-
-### 6.4 Start the stack
-
-From the project root:
-
-```bash
+# 3. Build and start
 docker compose up --build
 ```
 
-Services:
+This will:
 
-- Widget: http://localhost:3000  
-- API: http://localhost:8000  
+- Start the **orchestrator** on `http://localhost:8000`  
+- Start the **widget** on `http://localhost:3000`
 
-### 6.5 Using the widget
+Open `http://localhost:3000` in the browser to use the widget.
 
-1. Open `http://localhost:3000` in your browser  
-2. Start a new conversation in the widget  
-3. Follow the prompts:
-   - Give consent  
-   - Share name, mobile, PAN last 4 digits  
-   - Provide desired amount and tenure  
-4. On approval you should see:
-   - KFS fields inside the widget  
-   - A "Download sanction letter" link that opens the generated PDF  
+The backend serves generated files from:
 
-Generated files can also be found under:
-
-```text
-orchestrator/data/
-  ├─ sanction_<session>.pdf
-  └─ kfs_<session>.json
-```
+- `http://localhost:8000/files/...`
 
 ---
 
-## 7. API reference (quick)
+## 7. API contract
 
-### `POST /api/chat`
+### Endpoint
 
-Form fields:
+`POST /api/chat`
+
+- **URL**: `http://localhost:8000/api/chat`  
+- **Method**: `POST`  
+- **Content-Type**: `multipart/form-data`
+
+#### Request fields
 
 - `session_id` (string, required)  
-- `message` (string, required)  
-- `name` (string, optional)  
-- `mobile` (string, optional)  
-- `pan_tail` (string, optional, last 4 digits)  
-- `desired_amount` (int, optional, default `150000`)  
-- `tenure` (int, optional, default `24`)
+- `message` (string, required) - chat style text from the widget  
+- `name` (string, optional but required for approval)  
+- `mobile` (string, optional but required for approval)  
+- `pan_tail` (string, last 4 digits, optional but required for approval)  
+- `desired_amount` (int, default `150000`)  
+- `tenure` (int, default `24`)
 
-Example:
-
-```bash
-curl -X POST http://localhost:8000/api/chat \
-  -F 'session_id=demo123' \
-  -F 'message=Hi, I want a loan' \
-  -F 'name=Riya Sharma' \
-  -F 'mobile=9876543210' \
-  -F 'pan_tail=1234' \
-  -F 'desired_amount=150000' \
-  -F 'tenure=24'
-```
-
-Sample response shape:
+#### Response shape
 
 ```json
 {
   "reply": "Sanctioned. Your PDF + KFS is ready.",
-  "pdf": "http://localhost:8000/files/sanction_demo123.pdf",
+  "pdf": "http://localhost:8000/files/sanction_<session_id>.pdf",
   "kfs": {
-    "Name": "Riya Sharma",
+    "Name": "Test User",
     "Amount": 150000,
     "Tenure": 24,
-    "EMI": 7200,
-    "APR": "16%",
-    "MandateID": "MDT-DEMO-1234",
-    "PAN Last 4": "1234"
+    "EMI": 7321,
+    "APR": "16.5%",
+    "MandateID": "MDT_123456"
   },
   "handoff": false
 }
 ```
 
----
+For declined or manual review cases:
 
-## 8. Project structure
-
-```text
-.
-├─ orchestrator/
-│  ├─ app/
-│  │  ├─ main.py              # FastAPI app entry
-│  │  ├─ deps.py              # CORS and shared deps
-│  │  ├─ models.py            # Session store and init_db
-│  │  ├─ routers/
-│  │  │  ├─ health.py         # /api/health
-│  │  │  └─ chat.py           # /api/chat
-│  │  ├─ agents/
-│  │  │  ├─ master.py         # Conversation state machine
-│  │  │  ├─ verification.py   # Verification agent
-│  │  │  ├─ underwriting.py   # Underwriting rules
-│  │  │  └─ sanction.py       # Sanction plus KFS plus PDF
-│  │  ├─ pdf/
-│  │  │  └─ sanction_letter.py # ReportLab PDF builder
-│  │  ├─ services/
-│  │  │  ├─ mandate.py        # Mock e mandate integration
-│  │  │  └─ crm.py            # Mock CRM integration
-│  │  └─ events.py            # Simple event log utilities
-│  └─ data/                   # Generated PDFs and JSON
-│
-├─ web-widget/
-│  ├─ app/                    # Next.js app directory
-│  ├─ components/             # Chat widget components
-│  ├─ lib/                    # API helpers and session utils
-│  └─ public/                 # Static assets
-│
-└─ docker-compose.yml
+```json
+{
+  "reply": "Sorry, declined - reason: Low score (score 420).",
+  "pdf": null,
+  "kfs": null,
+  "handoff": false
+}
 ```
 
+or
+
+```json
+{
+  "reply": "We queued this for manual review.",
+  "pdf": null,
+  "kfs": null,
+  "handoff": true
+}
+```
+
+The widget uses this contract to decide what to show.
+
 ---
 
-## 9. Design choices
+## 8. Sanction PDF and KFS design
 
-A few deliberate choices that keep the project clear to review:
+The PDF is generated from the same KFS data that the widget shows, so the customer sees consistent information in both places.
 
-- Named stages instead of one opaque AI call  
-  - Each stage has a clear input and output  
+**Sanction letter highlights:**
 
-- Plain JSON and files instead of a database  
-  - Easy to inspect during judging  
+- Bank and product header  
+- Customer name and masked PAN (last 4 digits)  
+- Sanctioned amount with currency formatting  
+- Tenure, EMI, APR  
+- Mandate reference  
+- Simple terms and conditions block  
+- Sign off section
 
-- PDF and KFS generated from the same source data  
-  - Avoids mismatches between what is shown on screen and what is in the letter  
+**KFS JSON:**
 
-- Minimal, clean UI  
-  - Focus on correctness and clarity of the journey  
+- Compact structure that is easy to render in any UI or export to other systems.
+
+---
+
+## 9. Project structure
+
+```text
+greenlight-credit/
+├─ docker-compose.yml
+├─ orchestrator/
+│  ├─ app/
+│  │  ├─ main.py
+│  │  ├─ routers/
+│  │  │  ├─ health.py
+│  │  │  └─ chat.py
+│  │  ├─ agents/
+│  │  │  ├─ master.py
+│  │  │  ├─ verification.py
+│  │  │  ├─ underwriting.py
+│  │  │  └─ sanction.py
+│  │  ├─ pdf/
+│  │  │  └─ sanction_letter.py
+│  │  ├─ services/
+│  │  │  ├─ mandate.py
+│  │  │  └─ crm.py
+│  │  ├─ events.py, models.py, deps.py, audit.py
+│  └─ data/    # generated PDF and KFS files (mapped to /files)
+└─ web-widget/
+   ├─ Dockerfile
+   ├─ package.json
+   ├─ app/ or pages/ (Next.js widget UI)
+   └─ src/components/...
+```
 
 ---
 
 ## 10. Possible extensions
 
-If this were taken further, natural next steps would be:
+The prototype is kept small on purpose so that each part is easy to understand and extend. Natural next steps include:
 
-- Plug in real verification APIs for PAN, mobile, and bank details  
-- Replace the rule based underwriting with a scorecard backed by real data  
-- Add more fields to the KFS, such as charges, prepayment rules, and schedules  
-- Plug the event log into a small dashboard for operations teams  
+- Plugging in real verification APIs for PAN and mobile.
+- Replacing the rule based underwriting with a scoring model or an external credit engine.
+- Adding audit persistence so that every decision and input is stored for later review.
+- Adding role based dashboards for operations teams to review manual cases.
 
 ---
 
-## 11. How to use this repository in the EY submission
+## 11. License
 
-- GitHub link: `<your final repo URL>`  
-- Demo steps:
-  1. Start the containers  
-  2. Open `http://localhost:3000`  
-  3. Run through a sample loan journey  
-  4. Download and show the sanction letter and KFS PDF  
-
-This keeps the focus on a real, working flow rather than only slides.
+This project is shared as part of EY Techathon 6.0.  
+Use for review and learning is welcome. For any other use, please contact the author.
