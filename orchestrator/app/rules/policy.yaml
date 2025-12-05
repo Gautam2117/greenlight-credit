@@ -1,0 +1,9 @@
+eligibility:
+  min_credit_score: 700
+  mandate_max_emi_ratio: 0.5
+  preapproved_multiplier: 2.5
+
+offers:
+  default_apr: 18.0
+  tenure_months: [12, 24, 36]
+  max_amount: 500000

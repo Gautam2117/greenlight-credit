@@ -1,0 +1,31 @@
+services:
+  orchestrator:
+    build: ./orchestrator
+    container_name: greenlight-credit-orchestrator
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      # CORS - all dev origins you may use
+      - ORCH_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+      # add your LAN IP origin too if you open from phone:
+      # - ORCH_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://192.168.1.5:3000
+    volumes:
+      - ./orchestrator/data:/app/data
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  widget:
+    build: ./web-widget
+    container_name: greenlight-credit-widget
+    depends_on:
+      - orchestrator
+    ports:
+      - "3000:3000"
+    environment:
+      # UI -> API
+      - NEXT_PUBLIC_API=http://localhost:8000/api/chat
+      - NEXT_PUBLIC_API_BASE=http://localhost:8000
+      - NODE_ENV=production
+      - PORT=3000
+    restart: unless-stopped
