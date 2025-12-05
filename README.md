@@ -1,5 +1,5 @@
 
-# GreenLight Credit - Sanction Widget
+# GreenLight Credit - Loan Sanction Chat Widget
 
 This repository contains a working prototype of **GreenLight Credit**, a small credit sanction widget plus a backend orchestrator, built for the EY Techathon 6.0 theme on Agentic AI.
 
@@ -144,11 +144,11 @@ High level view:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/<your-username>/greenlight-credit.git
+git clone https://github.com/Gautam2117/greenlight-credit.git
 cd greenlight-credit
 
 # 2. Set environment variables (if needed)
-# cp .env.example .env   # if an example file is present
+# cp .env.example .env
 
 # 3. Build and start
 docker compose up --build
