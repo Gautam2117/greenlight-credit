@@ -147,7 +147,7 @@ High level view:
 git clone https://github.com/Gautam2117/greenlight-credit.git
 cd greenlight-credit
 
-# 2. Set environment variables (if needed)
+# 2. Set environment variables
 # cp .env.example .env
 
 # 3. Build and start
